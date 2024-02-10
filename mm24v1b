@@ -1,0 +1,206 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import {ERC721, Strings} from "@openzeppelin/contracts/token/ERC721/ERC721.sol";
+import {ERC721URIStorage} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
+import {ERC721Pausable} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721Pausable.sol";
+import {ERC721Burnable} from "@openzeppelin/contracts/token/ERC721/extensions/ERC721Burnable.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Address} from "@openzeppelin/contracts/utils/Address.sol";
+import {IBlast} from "./IBlast.sol";
+
+
+error PayableWrong();
+error MaxTokensMinted();
+error EmptyNotPossible();
+error MaxMintNeedsToBeGreaterThanMintedNumber();
+error OnlyForMinted();
+
+contract MM24v1b is ERC721, ERC721URIStorage, ERC721Pausable, Ownable, ERC721Burnable, ReentrancyGuard {
+    uint256 private _nextTokenId;
+    uint256 private _mintPayable;
+    uint256 private _maxMint;
+    string private _currentUri;
+    string private _newName;
+    address private _receivingAddress;
+
+    IBlast blastGas;
+
+    constructor(address initialOwner) ERC721("init", "2024-mNFTb") Ownable(initialOwner) {
+        pause();
+        _nextTokenId = 1;
+        _receivingAddress = owner();
+        _mintPayable = 1 ether;
+        blastGas = IBlast(0x4300000000000000000000000000000000000002);
+        blastGas.configureAutomaticYield();
+        blastGas.configureClaimableGas();
+    }
+
+    function claimGas(bool all) public onlyOwner {
+        if(all){
+            blastGas.claimAllGas(address(this), _receivingAddress);
+        }else{
+            blastGas.claimMaxGas(address(this), _receivingAddress);
+        }
+    }
+
+    function getGasInfo() public view onlyOwner returns (string memory) {
+        (uint256 etherSeconds, uint256 etherBalance,,) = blastGas.readGasParams(address(this));
+        return string.concat(
+        string.concat("ethsec: ", Strings.toString(etherSeconds)),
+        string.concat("ethBal: ", Strings.toString(etherBalance)));
+    }
+
+    //convenience and to save contract calls, amount in  gwei, 1.000.000.000 = 1 eth
+    function init(string memory init_name, string memory uri, uint256 maxMint, uint256 amount) public onlyOwner {
+        setUri(uri);
+        setName(init_name);
+        if( maxMint >= 1) {
+            setMaxMint(maxMint);
+        }
+        setMintPayable(amount);
+        unpause();
+    }
+
+    function _baseURI() internal pure override returns (string memory) {
+        return "";
+    }
+
+    function setUri(string memory uri) public onlyOwner {
+        if(bytes(uri).length == 0) revert EmptyNotPossible();
+        _currentUri = uri;
+    }
+
+    function updateUri() public onlyOwner  returns (uint256 updateNumber) {
+        uint256 updated = 0;
+        for(uint256 i=1;i<_nextTokenId;++i){
+            string memory turi = tokenURI(i);
+            if(!Strings.equal(turi, _currentUri)) {
+                _setTokenURI(i, _currentUri);
+                ++updated;
+            }
+        }
+        return updated;
+    }
+
+    function setUriRange(string memory uri, uint256 idx1, uint256 idx2) public onlyOwner
+     returns(uint256 setNumber) {
+        if(idx2 > _nextTokenId) revert OnlyForMinted();
+        uint256 setno = 0;
+        for(uint256 i=idx1;i<=idx2;++i){
+            string memory turi = tokenURI(i);
+            if(bytes(turi).length != 0){
+                _setTokenURI(i, uri);
+            }
+            ++setno;
+        }
+        return setno;
+    }
+
+    function setName(string memory name_new) public onlyOwner {
+        _newName = name_new;
+    }
+
+    function name() public view override returns (string memory) {
+        if(bytes(_newName).length > 0) {
+            return _newName;
+        }
+        return super.name();
+    }
+
+    function setMaxMint(uint256 maxNo) public onlyOwner {
+        if(_nextTokenId > maxNo) revert MaxMintNeedsToBeGreaterThanMintedNumber();
+        _maxMint = maxNo;
+    }
+
+    function MaxMint() public view returns(uint256 maxno) {
+        return _maxMint;
+    }
+
+    function setWithdrawAddress(address withdrawAddress) public onlyOwner returns (address) {
+        _receivingAddress = withdrawAddress;
+        return _receivingAddress;
+    }
+
+    function pause() public onlyOwner {
+        _pause();
+    }
+
+    function unpause() public onlyOwner {
+        _unpause();
+    }
+
+    function safeMint(address to) public onlyOwner returns (uint256 id) {
+        return safeMintInternal(to);
+    }
+
+    function safeMintInternal(address to) private returns (uint256 id) {
+        uint256 tokenId = _nextTokenId++;
+        if(tokenId > _maxMint) revert MaxTokensMinted();
+        _safeMint(to, tokenId);
+        _setTokenURI(tokenId, _currentUri);
+        return tokenId;
+    }
+
+    function mintNumber() public view returns (uint256 number) {
+        return _nextTokenId-1;
+    }
+
+    function mintPayable() public view returns (uint256 number) {
+        return _mintPayable / 1 gwei;
+    }
+
+    //amount in gwei, 1.000.000.000 = 1 eth
+    function setMintPayable(uint256 amount) public onlyOwner {
+        amount = 1 gwei * amount;
+        if(amount < (1 ether / 1000000000)) revert PayableWrong();
+        _mintPayable = amount;
+    }
+
+    function withdrawETH() external onlyOwner {
+        uint256 amount = address(this).balance;
+        address payable recipient;
+        if(_receivingAddress != owner()) {
+            recipient = payable(_receivingAddress);
+        }else {
+            recipient = payable( owner() );
+        }
+        Address.sendValue(recipient, amount);
+    }
+
+    function mint() external payable nonReentrant returns (uint256 fromTokenId) {
+        if (msg.value != _mintPayable) revert PayableWrong();
+        address to = msg.sender;
+        uint256 idx = safeMintInternal(to);
+        return idx;
+    }
+
+    // The following functions are overrides required by Solidity.
+
+    function _update(address to, uint256 tokenId, address auth)
+        internal
+        override(ERC721, ERC721Pausable)
+        returns (address)
+    {
+        return super._update(to, tokenId, auth);
+    }
+
+    function tokenURI(uint256 tokenId)
+        public
+        view
+        override(ERC721, ERC721URIStorage)
+        returns (string memory)
+    {
+        return super.tokenURI(tokenId);
+    }
+
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(ERC721, ERC721URIStorage)
+        returns (bool)
+    {
+        return super.supportsInterface(interfaceId);
+    }
+}
